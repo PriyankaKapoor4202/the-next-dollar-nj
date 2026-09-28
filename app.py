@@ -180,7 +180,10 @@ with tab_budget:
             help=f"Default is the statewide median for a child in poverty: ${statewide:,.0f}.",
         )
 
-    pool = df[(df["priority_score"] > 0) & (df["dollars_per_poor_kid"] < target)].copy()
+    # Only areas meaningfully below target: near-misses would inflate "children reached"
+    # while receiving almost nothing per child.
+    eligible_below = 0.8 * target
+    pool = df[(df["priority_score"] > 0) & (df["dollars_per_poor_kid"] < eligible_below)].copy()
     pool["shortfall"] = (target - pool["dollars_per_poor_kid"]) * pool["kids_in_poverty"]
     pool["cost_per_child"] = target - pool["dollars_per_poor_kid"]
     order = {
@@ -211,12 +214,15 @@ with tab_budget:
         m1, m2, m3 = st.columns(3)
         m1.metric("Children brought to target", f"{plan['Children brought to target'].sum():,}")
         m2.metric("Areas funded", f"{len(plan)} ({int(plan['Fully funded'].sum())} fully)")
-        m3.metric("Cost per child reached",
-                  f"${(budget - remaining) / max(plan['Children brought to target'].sum(), 1):,.0f}")
+        m3.metric("Average added per child in poverty",
+                  f"${(budget - remaining) / max(plan['Children in poverty'].sum(), 1):,.0f}",
+                  help="Grant dollars divided by all children in poverty in the funded areas.")
         st.dataframe(plan, hide_index=True, width="stretch")
         total_need = pool["shortfall"].sum()
         st.markdown(
-            f'<p class="note">Closing the gap in every high-gap area to ${target:,} per child '
+            f'<p class="note">Eligible areas are high-gap ZIP areas at least 20% below the '
+            f"target (under ${eligible_below:,.0f} per child). "
+            f"Closing the gap in all of them to ${target:,} per child "
             f"would take about ${total_need / 1e6:,.1f}M. Compare strategies: "
             "\"most children per dollar\" reaches the most kids, \"deepest gap first\" "
             "prioritizes the worst-off areas even when they are small.</p>",
