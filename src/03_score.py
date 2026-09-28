@@ -16,7 +16,11 @@ SUPPLY = access to nonprofit service capacity, measured with the
 GAP   = need percentile minus supply percentile (-1 to +1; higher = bigger gap).
 
 SENSITIVITY: the ranking is recomputed under 4 weighting schemes x 3 radii
-(12 scenarios). ZIPs in the top 15 in at least 80% of scenarios are "robust".
+(12 scenarios). ZIPs in the top 10% in at least 80% of scenarios are "robust",
+and rank correlation (Spearman) with the baseline is reported per scenario.
+
+PRIORITY: gap intensity alone favors small ZIPs, so a second list ranks
+high-gap ZIPs (top 20% by gap) by how many children in poverty live there.
 
 Run from the project root (after 02_transform.py):
     python src/03_score.py
@@ -36,7 +40,9 @@ OUT_DIR = Path("data/processed")
 BASE_RADIUS = 10  # miles
 RADII = [5, 10, 15]
 TOP_N = 15
+TOP_SHARE = 0.10          # robustness: is a ZIP in the top 10% under each scenario?
 ROBUST_THRESHOLD = 0.8
+MIN_CHILDREN_SCORED = 500 # Census estimates for smaller areas have very wide error margins
 
 WEIGHT_SCHEMES = {
     "baseline":       {"poverty": 0.35, "medicaid": 0.25, "uninsured": 0.15, "shortage": 0.25},
@@ -113,7 +119,7 @@ def main() -> None:
               for r in RADII}
 
     # Only score ZIPs with enough children and complete need data
-    mask = ((~z["low_population_flag"])
+    mask = ((z["children"].fillna(0) >= MIN_CHILDREN_SCORED)
             & z["pct_children_in_poverty"].notna()
             & z["pct_kids_medicaid"].notna()
             & z["pct_kids_uninsured"].notna())
@@ -139,17 +145,24 @@ def main() -> None:
     # ---------------- Sensitivity analysis ----------------
     top_counts = pd.Series(0, index=scored.index)
     scenarios = list(product(WEIGHT_SCHEMES.items(), RADII))
-    for (_, w), r in scenarios:
+    cutoff = int(round(len(scored) * TOP_SHARE))
+    correlations = []
+    for (name, w), r in scenarios:
         g = score(scored, w, access[r][0][idx], access[r][1][idx])
-        top_counts[g.rank(ascending=False, method="first") <= TOP_N] += 1
-    scored["top15_frequency"] = (top_counts / len(scenarios)).round(2)
-    scored["robust"] = scored["top15_frequency"] >= ROBUST_THRESHOLD
+        top_counts[g.rank(ascending=False, method="first") <= cutoff] += 1
+        correlations.append((name, r, scored["gap_score"].corr(g, method="spearman")))
+    scored["top10pct_frequency"] = (top_counts / len(scenarios)).round(2)
+    scored["robust"] = scored["top10pct_frequency"] >= ROBUST_THRESHOLD
+    scored["priority_score"] = np.where(
+        scored["gap_score"] >= scored["gap_score"].quantile(0.8),
+        scored["kids_in_poverty"], 0)
 
     # ---------------- Save ----------------
     cols = ["zcta", "place_name", "county_name", "lat", "lon", "children", "kids_in_poverty",
             "pct_children_in_poverty", "pct_kids_medicaid", "pct_kids_uninsured",
             "shortage_share", "org_count", "orgs_per_1k_poor_kids", "dollars_per_poor_kid",
-            "need_pct", "supply_pct", "gap_score", "gap_rank", "top15_frequency", "robust"]
+            "need_pct", "supply_pct", "gap_score", "gap_rank", "top10pct_frequency", "robust",
+            "priority_score"]
     out = scored[cols].sort_values("gap_rank")
     out["children"] = out["children"].astype(int)
     out["kids_in_poverty"] = out["kids_in_poverty"].astype(int)
@@ -164,42 +177,70 @@ def main() -> None:
           f"({len(z) - len(scored)} excluded: too few children or missing data).")
     print(f"Supply measured within {BASE_RADIUS} miles using {len(orgs)} nonprofits.")
 
-    print(f"\n=== TOP {TOP_N} SERVICE DESERTS (baseline) ===")
-    print(out.head(TOP_N)[["gap_rank", "zcta", "place_name", "county_name", "children",
-                          "pct_children_in_poverty", "shortage_share",
-                          "orgs_per_1k_poor_kids", "dollars_per_poor_kid",
-                          "gap_score", "top15_frequency"]].to_string(index=False))
+    show = ["zcta", "place_name", "county_name", "children", "kids_in_poverty",
+            "pct_children_in_poverty", "shortage_share", "orgs_per_1k_poor_kids",
+            "dollars_per_poor_kid", "gap_score", "top10pct_frequency"]
 
+    print(f"\n=== LIST A: MOST SEVERE GAPS (intensity), top {TOP_N} ===")
+    print(out.head(TOP_N)[["gap_rank"] + show].to_string(index=False))
+
+    print(f"\n=== LIST B: MOST CHILDREN AFFECTED (top-20% gap ZIPs by kids in poverty), top {TOP_N} ===")
+    print(out.sort_values("priority_score", ascending=False).head(TOP_N)[["gap_rank"] + show]
+          .to_string(index=False))
+
+    print(f"\n=== ROBUSTNESS: rank correlation with baseline across {len(scenarios)} scenarios ===")
+    corr_df = pd.DataFrame(correlations, columns=["weights", "radius_mi", "spearman_vs_baseline"])
+    print(corr_df.round(3).to_string(index=False))
     n_robust = int(out["robust"].sum())
-    print(f"\n=== ROBUSTNESS: {n_robust} ZIPs stay in the top {TOP_N} in "
-          f">= {ROBUST_THRESHOLD:.0%} of {len(scenarios)} scenarios ===")
-    print(out[out["robust"]][["zcta", "place_name", "county_name",
-                              "top15_frequency"]].to_string(index=False))
+    print(f"\n{n_robust} ZIPs are in the top 10% ({cutoff} ZIPs) in >= "
+          f"{ROBUST_THRESHOLD:.0%} of scenarios.")
 
-    top = out.head(TOP_N)
-    fragile = top[~top["robust"]]
-    if len(fragile):
-        print("\nIn the baseline top 15 but sensitive to assumptions:")
-        print(fragile[["zcta", "place_name", "top15_frequency"]].to_string(index=False))
+    print("\n=== EQUITY CHECK (non-circular): reachable capacity by child poverty level ===")
+    print("ZIPs grouped ONLY by child poverty rate; compared ONLY on access.")
+    out["poverty_quintile"] = pd.qcut(out["pct_children_in_poverty"].rank(method="first"), 5,
+                                      labels=["1 lowest", "2", "3", "4", "5 highest"])
+    eq = out.groupby("poverty_quintile", observed=True).agg(
+        zips=("zcta", "count"),
+        avg_child_poverty=("pct_children_in_poverty", "mean"),
+        kids_in_poverty=("kids_in_poverty", "sum"),
+        median_orgs_per_1k_poor_kids=("orgs_per_1k_poor_kids", "median"),
+        median_dollars_per_poor_kid=("dollars_per_poor_kid", "median"),
+    ).round(1)
+    print(eq.to_string())
 
-    print("\n=== HEADLINE NUMBERS (baseline) ===")
-    top_q = out["gap_score"] >= out["gap_score"].quantile(0.8)
-    total_poor = out["kids_in_poverty"].sum()
-    share_poor = out.loc[top_q, "kids_in_poverty"].sum() / total_poor
-    med_top = out.loc[top_q, "dollars_per_poor_kid"].median()
-    med_rest = out.loc[~top_q, "dollars_per_poor_kid"].median()
-    print(f"  Highest-gap fifth of ZIPs: {top_q.sum()} areas, "
-          f"{int(out.loc[top_q, 'kids_in_poverty'].sum()):,} children in poverty "
-          f"({share_poor:.0%} of the state's total in scored areas)")
-    print(f"  Median nonprofit $ reachable per poor child: "
-          f"${med_top:,.0f} there vs ${med_rest:,.0f} everywhere else")
-    if med_top > 0:
-        print(f"  -> Other areas have {med_rest / med_top:.1f}x the reachable capacity per child")
+    # Children-weighted: what the typical poor child can reach, not the typical ZIP
+    def weighted_median(g):
+        g = g.sort_values("dollars_per_poor_kid")
+        c = g["kids_in_poverty"].cumsum()
+        return g.loc[c >= c.iloc[-1] / 2, "dollars_per_poor_kid"].iloc[0]
+    wm = out.groupby("poverty_quintile", observed=True).apply(weighted_median, include_groups=False)
+    print("\nReachable $ per poor child, for the typical child in poverty (child-weighted median):")
+    print(wm.round(0).to_string())
 
-    print("\n=== GAP BY COUNTY (children in poverty living in top-fifth gap ZIPs) ===")
-    by_county = (out[top_q].groupby("county_name")["kids_in_poverty"].sum()
-                 .sort_values(ascending=False).astype(int))
-    print(by_county.to_string())
+    print("\n=== ZERO-ACCESS CHECK: ZIPs with no relevant nonprofit within "
+          f"{BASE_RADIUS} miles ===")
+    zero = out[out["orgs_per_1k_poor_kids"] == 0]
+    print(f"{len(zero)} scored ZIPs; by county:")
+    print(zero["county_name"].value_counts().to_string())
+
+    # Possible missed providers near zero-access ZIPs: nonprofits whose NAME suggests
+    # mental health/family services but weren't captured by our filters.
+    print("\nPossible providers our filters missed, in counties with zero-access ZIPs")
+    print("(review by hand -- if real providers show up, we broaden the filters):")
+    if len(zero):
+        con.register("zero_zips", z[z["county_name"].isin(zero["county_name"].unique())][["zcta"]])
+        missed = con.execute("""
+            SELECT b.NAME AS name, b.CITY AS city, b.NTEE_CD AS ntee,
+                   ROUND(TRY_CAST(b.REVENUE_AMT AS DOUBLE) / 1e6, 2) AS revenue_m
+            FROM raw_bmf b
+            WHERE LEFT(b.ZIP, 5) IN (SELECT zcta FROM zero_zips)
+              AND regexp_matches(UPPER(b.NAME),
+                  '\\bCOUNSEL|\\bMENTAL|\\bGUIDANCE|\\bFAMILY SERVICE|\\bPSYCH|\\bTHERAP|\\bWELLNESS')
+              AND CAST(b.EIN AS VARCHAR) NOT IN (SELECT CAST(ein AS VARCHAR) FROM stg_orgs)
+            ORDER BY TRY_CAST(b.REVENUE_AMT AS DOUBLE) DESC NULLS LAST
+            LIMIT 20
+        """).df()
+        print(missed.to_string(index=False) if len(missed) else "  (none found)")
 
     con.close()
     print(f"\nDone. Saved scores_zcta table and {OUT_DIR / 'scores_zcta.csv'}")
