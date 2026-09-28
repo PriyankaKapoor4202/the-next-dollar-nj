@@ -10,7 +10,7 @@ Run from the project root:
 """
 
 from pathlib import Path
-import io
+import os
 import sys
 
 import duckdb
@@ -70,6 +70,28 @@ def download(name: str, url: str) -> Path:
     return path
 
 
+CENSUS_KEY = os.environ.get("CENSUS_API_KEY")
+
+
+def census_get(url: str, params: dict | None = None):
+    """Call the Census API and show its actual message if it doesn't return JSON."""
+    params = dict(params or {})
+    if CENSUS_KEY:
+        params["key"] = CENSUS_KEY
+    r = requests.get(url, params=params, headers=HEADERS, timeout=180)
+    try:
+        return r.json()
+    except ValueError:
+        sys.exit(
+            f"\nCensus API did not return data (HTTP {r.status_code}).\n"
+            f"It said:\n{r.text[:800]}\n\n"
+            "If this mentions a key or limit, get a free key at "
+            "https://api.census.gov/data/key_signup.html and run:\n"
+            "  export CENSUS_API_KEY=your_key_here\n"
+            "then re-run the script."
+        )
+
+
 def fetch_acs(dataset: str, variables: dict) -> pd.DataFrame:
     """Pull ACS variables for every ZCTA nationally (ZCTAs no longer nest in states)."""
     base = f"https://api.census.gov/data/{ACS_YEAR}/{dataset}"
@@ -77,9 +99,7 @@ def fetch_acs(dataset: str, variables: dict) -> pd.DataFrame:
         "get": ",".join(["NAME", *variables.keys()]),
         "for": "zip code tabulation area:*",
     }
-    r = requests.get(base, params=params, headers=HEADERS, timeout=180)
-    r.raise_for_status()
-    rows = r.json()
+    rows = census_get(base, params)
     df = pd.DataFrame(rows[1:], columns=rows[0])
     return df.rename(columns={"zip code tabulation area": "zcta", **variables})
 
@@ -87,7 +107,7 @@ def fetch_acs(dataset: str, variables: dict) -> pd.DataFrame:
 def check_acs_labels(dataset: str, variables: dict) -> None:
     """Print the official label for each variable so you can confirm it's right."""
     url = f"https://api.census.gov/data/{ACS_YEAR}/{dataset}/variables.json"
-    meta = requests.get(url, headers=HEADERS, timeout=180).json()["variables"]
+    meta = census_get(url)["variables"]
     for code, alias in variables.items():
         label = meta.get(code, {}).get("label", "!! NOT FOUND -- fix this code !!")
         print(f"  {code:<16} -> {alias:<26} | {label}")
