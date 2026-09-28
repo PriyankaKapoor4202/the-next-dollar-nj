@@ -33,6 +33,16 @@ SOURCES = {
         "https://www2.census.gov/geo/docs/maps-data/data/rel2020/"
         "zcta520/tab20_zcta520_county20_natl.txt"
     ),
+    # Census 2020 ZCTA-to-census-tract relationship file (for tract-level shortage areas)
+    "zcta_tract.txt": (
+        "https://www2.census.gov/geo/docs/maps-data/data/rel2020/"
+        "zcta520/tab20_zcta520_tract20_natl.txt"
+    ),
+    # Census Gazetteer: center point (lat/lon) of every ZCTA, for distance calculations
+    "gaz_zcta.zip": (
+        "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/"
+        "2023_Gazetteer/2023_Gaz_zcta_national.zip"
+    ),
 }
 
 # ACS variables. Labels are checked against the Census API at runtime,
@@ -133,6 +143,12 @@ def main() -> None:
     con.register("xwalk_df", xwalk)
     con.register("acs_df", acs)
 
+    tract_x = pd.read_csv(paths["zcta_tract.txt"], sep="|", dtype=str)
+    con.register("tract_df", tract_x[tract_x["GEOID_TRACT_20"].str.startswith("34", na=False)])
+    gaz = pd.read_csv(paths["gaz_zcta.zip"], sep="\t", dtype=str, compression="zip")
+    gaz.columns = gaz.columns.str.strip()  # last header has trailing spaces
+    con.register("gaz_df", gaz)
+
     con.execute("CREATE OR REPLACE TABLE raw_bmf AS SELECT * FROM bmf_df")
     con.execute("CREATE OR REPLACE TABLE raw_hpsa_mh AS SELECT * FROM hpsa_df")
     con.execute(
@@ -145,9 +161,21 @@ def main() -> None:
         "WHERE zcta IN (SELECT DISTINCT GEOID_ZCTA5_20 FROM raw_zcta_county)"
     )
 
+    con.execute(
+        "CREATE OR REPLACE TABLE raw_zcta_tract AS SELECT * FROM tract_df "
+        "WHERE GEOID_ZCTA5_20 IS NOT NULL"
+    )
+    con.execute(
+        "CREATE OR REPLACE TABLE raw_zcta_centroids AS "
+        "SELECT GEOID AS zcta, TRY_CAST(INTPTLAT AS DOUBLE) AS lat, "
+        "TRY_CAST(INTPTLONG AS DOUBLE) AS lon FROM gaz_df "
+        "WHERE GEOID IN (SELECT DISTINCT GEOID_ZCTA5_20 FROM raw_zcta_county)"
+    )
+
     # ---------------- Validation report ----------------
     print("\n=== ROW COUNTS ===")
-    for t in ["raw_bmf", "raw_hpsa_mh", "raw_zcta_county", "raw_acs"]:
+    for t in ["raw_bmf", "raw_hpsa_mh", "raw_zcta_county", "raw_acs",
+              "raw_zcta_tract", "raw_zcta_centroids"]:
         n = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         print(f"  {t:<18} {n:>8,}")
 
