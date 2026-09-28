@@ -34,9 +34,14 @@ EXCLUDE_NAMES = r"ECONOMICS"
 # HRSA designates some shortage areas as whole towns ("county subdivisions").
 # There's no Census town-to-ZCTA file, so these are mapped by hand to the
 # ZIP codes serving each town. Any town missing here is reported below.
+# Woodbridge spans several postal communities; 07067 (Colonia) and 08830 (Iselin)
+# also include small parts of neighboring towns, so this is an approximation.
 SUBDIVISION_ZCTAS = {
     "Carteret borough": ["07008"],
     "Rahway city": ["07065"],
+    "Perth Amboy city": ["08861"],
+    "Woodbridge township": ["07001", "07064", "07067", "07077", "07095",
+                            "08830", "08832", "08863"],
 }
 
 
