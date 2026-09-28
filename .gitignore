@@ -4,6 +4,7 @@ data/*.duckdb
 data/processed/*
 # ...but the final scores are committed so the dashboard can be deployed
 !data/processed/scores_zcta.csv
+!data/processed/nj_zcta.geojson
 *_log.txt
 .venv/
 __pycache__/
