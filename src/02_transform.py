@@ -24,7 +24,8 @@ OUT_DIR = Path("data/processed")
 
 MIN_CHILDREN = 100       # below this, rates are too noisy to trust
 MIN_NJ_LAND_SHARE = 0.5  # drop ZCTAs that are mostly in NY/PA/DE
-KEYWORDS = "AUTIS|DEVELOPMENTAL|BEHAVIORAL|CHILD GUIDANCE"
+# \b = word boundary, so AUTIS matches "AUTISM" but not "BAUTISTA" (Spanish: Baptist)
+KEYWORDS = r"\bAUTIS|\bDEVELOPMENTAL|\bBEHAVIORAL|\bCHILD GUIDANCE"
 
 
 def clean_num(col: str) -> str:
@@ -88,8 +89,11 @@ def main() -> None:
     """)
 
     # ------------------------------------------------------------------
-    # 3. Relevant nonprofits. Excludes private non-operating foundations
-    #    (FOUNDATION = '04'): they fund services rather than deliver them.
+    # 3. Relevant nonprofits. Excludes:
+    #    - private non-operating foundations (FOUNDATION = '04'): they fund
+    #      services rather than deliver them
+    #    - substance abuse orgs (NTEE F20-F22): mostly adult addiction treatment,
+    #      outside the children's mental health scope
     # ------------------------------------------------------------------
     con.execute(f"""
         CREATE OR REPLACE TABLE stg_orgs AS
@@ -103,6 +107,7 @@ def main() -> None:
         FROM raw_bmf
         WHERE (NTEE_CD LIKE 'F%' OR regexp_matches(UPPER(NAME), '{KEYWORDS}'))
           AND COALESCE(FOUNDATION, '') <> '04'
+          AND COALESCE(NTEE_CD, '') NOT LIKE 'F2%'
         QUALIFY ROW_NUMBER() OVER (PARTITION BY EIN ORDER BY NAME) = 1
     """)
 
@@ -199,6 +204,26 @@ def main() -> None:
         ORDER BY h.mh_hpsa_score DESC
     """).df().to_string(index=False))
 
+    section("HOW HRSA DEFINES EACH DESIGNATED NJ SHORTAGE AREA (for the Day 3 fix)")
+    print(con.execute("""
+        SELECT "County Equivalent Name"                      AS county,
+               "HPSA Component Type Description"             AS component_type,
+               COUNT(*)                                      AS components,
+               MIN("HPSA Component Source Identification Number") AS example_id,
+               MIN("HPSA Component Name")                    AS example_name
+        FROM raw_hpsa_mh
+        WHERE "Primary State Abbreviation" = 'NJ'
+          AND "HPSA Status" = 'Designated'
+          AND "Designation Type" ILIKE '%geographic%'
+        GROUP BY 1, 2 ORDER BY 1, 2
+    """).df().to_string(index=False))
+
+    section("KEYWORD MATCHES WITHOUT A MENTAL HEALTH CODE (spot-check for false positives)")
+    print(con.execute("""
+        SELECT name, city, ntee_cd FROM stg_orgs
+        WHERE match_reason = 'keyword' ORDER BY revenue DESC NULLS LAST LIMIT 15
+    """).df().to_string(index=False))
+
     section("LARGEST ORGS BY REVENUE (possible outliers)")
     print(con.execute("""
         SELECT name, city, ntee_cd, ROUND(revenue / 1e6, 1) AS revenue_millions
@@ -222,4 +247,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
