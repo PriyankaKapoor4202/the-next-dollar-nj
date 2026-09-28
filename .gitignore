@@ -1,0 +1,10 @@
+# raw downloads and the database are rebuilt by the scripts
+data/raw/
+data/*.duckdb
+data/processed/*
+# ...but the final scores are committed so the dashboard can be deployed
+!data/processed/scores_zcta.csv
+*_log.txt
+.venv/
+__pycache__/
+.DS_Store

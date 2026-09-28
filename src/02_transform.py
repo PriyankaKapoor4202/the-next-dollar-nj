@@ -27,9 +27,11 @@ MIN_CHILDREN = 100       # below this, rates are too noisy to trust
 MIN_NJ_LAND_SHARE = 0.5  # drop ZCTAs that are mostly in NY/PA/DE
 
 # \b = word boundary, so AUTIS matches "AUTISM" but not "BAUTISTA" (Spanish: Baptist)
-KEYWORDS = r"\bAUTIS|\bDEVELOPMENTAL|\bBEHAVIORAL|\bCHILD GUIDANCE"
-# Names that match a keyword but aren't service providers
-EXCLUDE_NAMES = r"ECONOMICS"
+KEYWORDS = (r"\bAUTIS|\bDEVELOPMENTAL|\bBEHAVIORAL|\bCHILD GUIDANCE"
+            r"|\bFAMILY SERVICE|\bCOUNSELING SERVICE|\bCOUNSELING CENTER")
+# Names that match a keyword but aren't mental health providers
+# (research groups, financial and legal counseling)
+EXCLUDE_NAMES = r"ECONOMICS|\bCREDIT|\bBUDGET|\bDEBT|\bLEGAL"
 
 # HRSA designates some shortage areas as whole towns ("county subdivisions").
 # There's no Census town-to-ZCTA file, so these are mapped by hand to the
@@ -130,7 +132,10 @@ def main() -> None:
                c.lat, c.lon
         FROM raw_bmf b
         LEFT JOIN raw_zcta_centroids c ON c.zcta = LEFT(b.ZIP, 5)
-        WHERE (b.NTEE_CD LIKE 'F%' OR regexp_matches(UPPER(b.NAME), '{KEYWORDS}'))
+        WHERE (b.NTEE_CD LIKE 'F%'
+               OR (regexp_matches(UPPER(b.NAME), '{KEYWORDS}')
+                   -- keyword matches coded as religious orgs (NTEE X) are congregations
+                   AND COALESCE(b.NTEE_CD, '') NOT LIKE 'X%'))
           AND NOT regexp_matches(UPPER(b.NAME), '{EXCLUDE_NAMES}')
           AND COALESCE(b.FOUNDATION, '') <> '04'
           AND COALESCE(b.NTEE_CD, '') NOT LIKE 'F2%'
