@@ -3,6 +3,8 @@
 
 **[Open the live dashboard](https://the-next-dollar-nj.streamlit.app/)**
 
+**[Read the one-page memo](memo.md)**
+
 <!-- Add a screenshot: save it as docs/dashboard.png, then keep the line below -->
 ![Dashboard map of New Jersey ZIP areas colored by need-versus-capacity gap](docs/dashboard.png)
 
